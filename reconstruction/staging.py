@@ -11,7 +11,8 @@ _CACHE_BYTES = 4 * 1024 * 1024
 
 
 class TileStaging:
-    def __init__(self) -> None:
+    def __init__(self, cache_bytes: int = _CACHE_BYTES) -> None:
+        self._cache_bytes = cache_bytes
         self._directory = TemporaryDirectory(prefix='instrument-stage-')
         try:
             self._db = sqlite3.connect(Path(self._directory.name) / 'draft.sqlite')
@@ -47,6 +48,14 @@ class TileStaging:
         ''', (key.y, key.x)).fetchone()
         return None if row is None else Tile.from_bytes(row[0])
 
+    def resident(self, key: TileKey) -> Tile | None:
+        """Return the tile only when it is in the memory cache, no disk lookup."""
+        cached = self._cache.get(key)
+        if cached is not None:
+            self._cache.move_to_end(key)
+            return cached[0]
+        return None
+
     def _store(self, key: TileKey, tile: Tile) -> None:
         self._db.execute('''
             INSERT INTO candidate (tile_y, tile_x, body) VALUES (?, ?, ?)
@@ -65,8 +74,13 @@ class TileStaging:
         charge = tile.resident_bytes
         self._cache[key] = (tile, charge)
         self._resident += charge
-        while self._resident > _CACHE_BYTES:
+        while self._resident > self._cache_bytes:
             self._spill_oldest()
+
+    def raise_cache_limit(self, cache_bytes: int) -> None:
+        """Promote the resident budget, e.g. when a frame starts moving tiles."""
+        if cache_bytes > self._cache_bytes:
+            self._cache_bytes = cache_bytes
 
     def iter_changed(self) -> Iterator[tuple[TileKey, bytes]]:
         while self._cache:

@@ -5,8 +5,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from archive import ArchiveDatabase, resume
-from inspection import crop
-from instrument_demo import LARGE_HEIGHT, LARGE_WIDTH, report_data
+from inspection import crop, crop_with_moves
+from instrument_demo import LARGE_HEIGHT, LARGE_WIDTH, collect, report_data
 from intake import DeviceBlock, DeviceFrame, FrameHeader, capture
 from registration import NamedRegions, RecordingIdentity, RecordingSpec, Rect, ScreenSpec, register
 
@@ -57,6 +57,13 @@ def large_move_frame(make_move):
     return DeviceFrame(FrameHeader(12), commands())
 
 
+def _move_tuples(report):
+    return [
+        None if move is None else [move.frame_no, move.command_index, move.x, move.y]
+        for move in report.moves
+    ]
+
+
 def main():
     with TemporaryDirectory(prefix="instrument-move-fixture-") as folder:
         path = Path(folder) / "archive.sqlite"
@@ -74,6 +81,45 @@ def main():
         if receipt.frame_no != 10 or next_frame != 11 or data != expected:
             raise AssertionError(f"unexpected V1 fixture: {receipt}, {next_frame}, {data}")
         print(json.dumps({"fixture": "move-base", "next_frame": next_frame, **data}))
+
+    # New archive: the mixed command stream is consumed once, in arrival order.
+    from intake import DeviceStream, MoveRect
+
+    with TemporaryDirectory(prefix="instrument-move-flow-") as folder:
+        path = Path(folder) / "archive.sqlite"
+        with ArchiveDatabase(path) as db, DeviceStream(small_frames(MoveRect)) as device:
+            register(db, small_spec())
+            collect(db, SMALL_ID, device)
+        expected_rows = {
+            10: (
+                [1, 2, 3, 4], 10,
+                [[10, 0, x, 0] for x in range(4)],
+                [None, None, None, None],
+            ),
+            11: (
+                [9, 9, 2, 3], 23,
+                [[11, 0, 0, 0], [11, 0, 0, 0], [10, 0, 1, 0], [10, 0, 2, 0]],
+                [None, [11, 1, 0, 0], [11, 1, 1, 0], [11, 1, 2, 0]],
+            ),
+            12: (
+                [9, 9, 9, 3], 30,
+                [[11, 0, 0, 0], [12, 1, 0, 0], [11, 0, 0, 0], [10, 0, 2, 0]],
+                [None, None, [12, 0, 1, 0], [11, 1, 2, 0]],
+            ),
+        }
+        with ArchiveDatabase(path) as db:
+            for frame_no, (pixels, gray_total, origins, moves) in expected_rows.items():
+                report = crop_with_moves(db, SMALL_ID, frame_no, SMALL_SCREEN)
+                actual = (list(report.pixels), report.gray_total,
+                          [[o.frame_no, o.block_index, o.x, o.y] for o in report.origins],
+                          _move_tuples(report))
+                if actual != (pixels, gray_total, origins, moves):
+                    raise AssertionError(f"frame {frame_no}: {actual} != {(pixels, gray_total, origins, moves)}")
+                print(json.dumps({
+                    "fixture": "move-flow", "frame": frame_no,
+                    "pixels": pixels, "gray_total": gray_total,
+                    "origins": origins, "moves": moves,
+                }))
 
 
 if __name__ == "__main__":

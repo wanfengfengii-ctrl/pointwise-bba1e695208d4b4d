@@ -35,6 +35,14 @@ class DeviceBlock:
 
 
 @dataclass(frozen=True, slots=True)
+class MoveRect:
+    """An in-screen rectangle move from ``source`` to an equal-sized ``target``."""
+
+    source: Rect
+    target: Rect
+
+
+@dataclass(frozen=True, slots=True)
 class DeviceFrame:
     header: FrameHeader
     blocks: Iterable[DeviceBlock]
@@ -44,6 +52,15 @@ def validate_block_rectangle(block: DeviceBlock, screen: ScreenSpec) -> None:
     if not isinstance(block.rect, Rect):
         raise RectangleError('device block needs a Rect')
     block.rect.require_inside(screen.bounds)
+
+
+def validate_move_rectangle(move: MoveRect, screen: ScreenSpec) -> None:
+    if not isinstance(move.source, Rect) or not isinstance(move.target, Rect):
+        raise RectangleError('move needs source and target Rect values')
+    move.source.require_inside(screen.bounds)
+    move.target.require_inside(screen.bounds)
+    if move.source.width != move.target.width or move.source.height != move.target.height:
+        raise RectangleError('move source and target must have equal width and height')
 
 
 def validate_base_block(block: DeviceBlock, screen: ScreenSpec, block_index: int) -> None:

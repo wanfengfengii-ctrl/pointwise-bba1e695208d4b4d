@@ -4,6 +4,7 @@ from .frames import DeviceBlock as DeviceBlock
 from .frames import DeviceFrame as DeviceFrame
 from .frames import FrameHeader as FrameHeader
 from .frames import FrameModeError as FrameModeError
+from .frames import MoveRect as MoveRect
 from .payloads import PayloadError as PayloadError
 from .sequence import FrameSequenceError as FrameSequenceError
 from .session import capture as capture

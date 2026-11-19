@@ -34,6 +34,8 @@ python3 -B instrument_demo.py
 | `archive` | `resume(db, recording_id)` | 返回 `ResumeState(last_frame, next_frame, base_frame)` |
 | `inspection` | `crop(db, recording_id, frame_no, rect)` | 返回指定绝对区框的 `RegionReport` |
 | `inspection` | `inspect(db, recording_id, frame_no, name)` | 按原登记区框返回 `RegionReport` |
+| `intake` | `MoveRect(source, target)` | 屏内等尺寸矩形搬运指令，可与 `DeviceBlock` 混排进同一帧 |
+| `inspection` | `crop_with_moves(db, recording_id, frame_no, rect)` | 返回带逐像素搬运证据的 `MoveRegionReport` |
 
 `RecordingIdentity(recording_id, device_id)` 使用非空字符串。`ScreenSpec(width, height, first_frame)` 的宽高为正整数，整数键采用 SQLite 有符号 64 位范围。`NamedRegions` 接受名称到 `Rect` 的映射并固定其内容。登记内容相同可重投，改动身份绑定、规格或区框报 `RegistrationConflict`。初始化和重开保留已登记的数据。
 
@@ -43,6 +45,16 @@ python3 -B instrument_demo.py
 
 未知录制、未知区名和未发布帧分别报 `UnknownRecording`、`UnknownRegion` 和 `FrameNotPublished`。非法范围报 `RectangleError`。帧序号错误报 `FrameSequenceError`，不支持的模式报 `FrameModeError`，首帧结构非法报 `BaseFrameError`，正文长度错误报 `PayloadError`。设备读取异常和 SQLite 错误向原调用方传播。任一帧失败后均可用新输入流重送原号，旧档案和确认进度保持有效。`capture` 的可选关键字 `before_commit` 接收无参回调，供集成核验在同一次 SQLite 事务的提交边界注入故障。
 
+## 屏内矩形搬运与两类出处
+
+后继永久帧的条目流可按到达顺序混排 `DeviceBlock` 与 `MoveRect(source, target)`，也可为一次性迭代器或空流。`source`、`target` 是同一录制当前屏幕内非空、等宽等高的零基半开 `Rect`，允许区域重叠；首帧含搬运报 `BaseFrameError`，非法搬运框报 `RectangleError`，其他条目类型报 `ValueError`。原块号与搬运命令号共用本帧全部条目的到达序号，从零计数。
+
+搬运读取本命令开始时的候选画面，因此包含同帧较早条目的结果；目标格取源区同偏移格。实现按拓扑顺序逐分块处理，重叠时从远离源区的方向取样，使每格在被覆盖前先被读取。任一非法命令、来源异常或提交失败都不发布该帧，旧帧仍可领取，`resume` 仍指向原确认点，原帧号可用新输入重送。
+
+每个像素同时保留两类出处：`Origin(frame_no, block_index, x, y)` 始终指向真正提供灰度的设备原块（`x`、`y` 为块内坐标）；搬运证据 `MoveEvidence(frame_no, command_index, x, y)` 指向最近一次搬运实际取样的绝对屏幕坐标。再次搬运保留原块出处并替换搬运证据；设备原块直写会刷新原块出处并清除该格搬运证据，同值直写也一样；未触及位置沿用旧证据。`crop_with_moves` 返回的 `moves` 与 `pixels` 严格按行序一一对应，每项为 `None` 或搬运记录。用 V1 写入、不含搬运段的旧分块从新入口读取时，`moves` 为同序的 `None`。未知录制、未发布帧和非法区框与 `crop` 使用相同异常。
+
 ## 分块与固定证据
 
 采集工作区将候选分块暂存在临时 SQLite 文件中。每个分块保存灰度和按行编码的来源区间。覆盖仅替换写入像素的灰度与来源。归档事务把帧清单及候选分块一起提交。已提交分块以录制号、块坐标和帧号为键，仅追加新修订；读固定历史时，每个所需分块选不晚于目标帧的最近修订。续采以最后确认的永久画面为底，只读取本次更新涉及的分块。设备停用和进程重开不影响已提交证据的可领性。
+
+含搬运的分块在原有灰度与来源区间之后追加一段带 `MV01` 标记的搬运证据区间：直写记为清除，搬运记为带帧号、命令号和绝对取样坐标的样本区间，按行以区间合并编码，工作内存只随单个分块与缓存带增长，不随搬运矩形面积增长。不含搬运段的旧 V1 分块仍按原格式读取，新入口将其证据视为全 `None`。8192×8192 大屏在整屏搬运下的采集峰值增量沿用 16 MiB 上限，由 `check_project.py` 的联合核验按 `ru_maxrss` 口径在独立进程中检查。
